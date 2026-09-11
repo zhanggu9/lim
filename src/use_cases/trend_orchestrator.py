@@ -62,6 +62,7 @@ class TrendOrchestrator:
         self.stop_atr = float(getattr(settings, "trend_stop_atr_mult", 1.0))
         self.trail_atr = float(getattr(settings, "trend_trailing_atr_mult", 1.5))
         self.max_chase_atr = float(getattr(settings, "trend_max_chase_atr_mult", 1.5))
+        self.take_profit_pct = float(getattr(settings, "trend_take_profit_pct", 1.2))
         self.add_enabled = bool(getattr(settings, "trend_pyramiding_enabled", False))
         self.add_atr = float(getattr(settings, "trend_add_atr_mult", 1.2))
         self.max_adds = max(0, int(getattr(settings, "trend_max_adds", 1)))
@@ -75,7 +76,7 @@ class TrendOrchestrator:
         self.add_count: Dict[str, int] = {}
 
     def _hist(self, code):
-        size = max(100, self.breakout_period + 20)
+        size = max(100, self.breakout_period + 20, self.exit_period + 20)
         return (self.h.setdefault(code, deque(maxlen=size)),
                 self.l.setdefault(code, deque(maxlen=size)),
                 self.c.setdefault(code, deque(maxlen=size)))
@@ -104,18 +105,33 @@ class TrendOrchestrator:
             if atr and atr > 0:
                 stop = st.entry_price - self.stop_atr * atr
                 trail = st.peak - self.trail_atr * atr
-                if float(price) <= stop or float(price) <= trail:
+                target = st.entry_price * (1.0 + self.take_profit_pct / 100.0)
+                if float(price) <= stop:
                     qty = self.order_sizer.sell_quantity(position_qty, 1.0)
                     if qty > 0:
-                        signals.append(TradeSignal(code=code, side="SELL", quantity=qty, reason=f"TREND EXIT ATR stop/trail atr={atr:.2f}", price=price, tag="trend:ATR_EXIT"))
+                        signals.append(TradeSignal(code=code, side="SELL", quantity=qty, reason=f"TREND STOP {price:.0f} <= {stop:.0f} ATR={atr:.2f}", price=price, tag="trend:STOP"))
                         st.phase = "EXIT_COOLDOWN"
                         return signals
-            if len(lows) >= self.exit_period and float(price) <= min(list(lows)[-self.exit_period:]):
-                qty = self.order_sizer.sell_quantity(position_qty, 1.0)
-                if qty > 0:
-                    signals.append(TradeSignal(code=code, side="SELL", quantity=qty, reason=f"TREND EXIT Donchian {self.exit_period}", price=price, tag="trend:DONCHIAN_EXIT"))
-                    st.phase = "EXIT_COOLDOWN"
-                    return signals
+                if float(price) >= target:
+                    qty = self.order_sizer.sell_quantity(position_qty, 1.0)
+                    if qty > 0:
+                        signals.append(TradeSignal(code=code, side="SELL", quantity=qty, reason=f"TREND TAKE PROFIT {price:.0f} >= {target:.0f} ({self.take_profit_pct:.2f}%)", price=price, tag="trend:TAKE_PROFIT"))
+                        st.phase = "EXIT_COOLDOWN"
+                        return signals
+                if float(price) <= trail and st.peak > st.entry_price:
+                    qty = self.order_sizer.sell_quantity(position_qty, 1.0)
+                    if qty > 0:
+                        signals.append(TradeSignal(code=code, side="SELL", quantity=qty, reason=f"TREND TRAIL {price:.0f} <= {trail:.0f} ATR={atr:.2f}", price=price, tag="trend:TRAIL"))
+                        st.phase = "EXIT_COOLDOWN"
+                        return signals
+            if len(lows) >= self.exit_period + 1:
+                prior_lows = list(lows)[-(self.exit_period + 1):-1]
+                if prior_lows and float(price) < min(prior_lows):
+                    qty = self.order_sizer.sell_quantity(position_qty, 1.0)
+                    if qty > 0:
+                        signals.append(TradeSignal(code=code, side="SELL", quantity=qty, reason=f"TREND EXIT Donchian {self.exit_period}", price=price, tag="trend:DONCHIAN_EXIT"))
+                        st.phase = "EXIT_COOLDOWN"
+                        return signals
             if adx is not None and plus is not None and minus is not None:
                 if adx < self.adx_threshold * 0.75 or minus > plus:
                     qty = self.order_sizer.sell_quantity(position_qty, 1.0)
