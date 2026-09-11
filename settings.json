@@ -6,8 +6,11 @@
   "condition_screen": "2000",
   "max_total_symbols": 20,
   "watchlist_include_holdings": true,
-  "excluded_codes": ["0193W0", "452300"],
-  "ticks_per_candle": 30,
+  "excluded_codes": [
+    "0193W0",
+    "452300"
+  ],
+  "ticks_per_candle": 20,
   "candle_source": "tick",
   "minutes_per_candle": 1,
   "minute_backfill_tick_size": 20,
@@ -24,7 +27,14 @@
   "rsi_sell_half": 40.0,
   "rsi_sell_all": 27.0,
   "grid_step_percent": 1.8,
-  "rsi_stage_multipliers": [0.5, 0.5, 0.5, 0.5, 0.4, 0.2],
+  "rsi_stage_multipliers": [
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.4,
+    0.2
+  ],
   "rsi_pyramiding_enabled": true,
   "rsi_entry_atr_mult": 0.8,
   "rsi_add_atr_mult": 1.4,
@@ -39,7 +49,7 @@
   "rsi_cci_period": 20,
   "rsi_cci_entry_threshold": 100.0,
   "rsi_cci_add_threshold": 120.0,
-  "strategy_name": "adaptive",
+  "strategy_name": "donchian_breakout",
   "donchian_breakout_period": 20,
   "donchian_exit_period": 8,
   "livermore_breakout_period": 20,
@@ -61,7 +71,12 @@
   "pullback_rebreak_buffer_atr_mult": 0.2,
   "pullback_invalidate_atr_mult": 1.0,
   "pullback_max_bars": 5,
-  "livermore_stage_multipliers": [1.0, 0.5, 0.3, 0.2],
+  "livermore_stage_multipliers": [
+    1.0,
+    0.5,
+    0.3,
+    0.2
+  ],
   "livermore_pyramiding_enabled": true,
   "livermore_retry_timeout_sec": 7.0,
   "livermore_retry_max": 1,
@@ -76,7 +91,9 @@
   "order_hoga_gb": "03",
   "order_hoga_offset_levels": 3,
   "real_screen": "5000",
-  "real_fids": ["10"],
+  "real_fids": [
+    "10"
+  ],
   "market_start": "09:00",
   "market_end": "15:30",
   "market_timezone": "Asia/Seoul",
