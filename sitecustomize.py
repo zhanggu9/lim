@@ -12,6 +12,40 @@ def _load_setting(name: str, default: float) -> float:
         return float(default)
 
 
+def _patch_strategy_factory() -> None:
+    """Add the unified trend strategy without modifying the legacy strategy implementations."""
+    try:
+        import use_cases.strategy as strategy_module
+        import use_cases.trading_engine as engine_module
+        from use_cases.trend_orchestrator import TrendOrchestrator
+    except Exception:
+        return
+
+    original_factory = getattr(strategy_module, "create_strategy", None)
+    if original_factory is None or getattr(original_factory, "_trend_combo_factory", False):
+        return
+
+    def create_strategy(name, settings, cooldown, order_sizer, market_hours):
+        if str(name).lower() == TrendOrchestrator.name:
+            return TrendOrchestrator(settings, cooldown, order_sizer, market_hours)
+        return original_factory(name, settings, cooldown, order_sizer, market_hours)
+
+    create_strategy._trend_combo_factory = True
+    strategy_module.create_strategy = create_strategy
+    engine_module.create_strategy = create_strategy
+
+    original_list = getattr(strategy_module, "list_strategies", None)
+    if original_list is not None and not getattr(original_list, "_trend_combo_list", False):
+        def list_strategies():
+            items = list(original_list())
+            if not any(str(item.get("name", "")) == TrendOrchestrator.name for item in items):
+                items.append({"name": TrendOrchestrator.name, "label": TrendOrchestrator.label})
+            return items
+        list_strategies._trend_combo_list = True
+        strategy_module.list_strategies = list_strategies
+        engine_module.list_strategies = list_strategies
+
+
 def _patch_adaptive_scalp() -> None:
     try:
         from use_cases.strategy import AdaptiveStrategy
@@ -19,11 +53,9 @@ def _patch_adaptive_scalp() -> None:
         return
 
     adx_threshold = _load_setting("adaptive_scalp_adx_threshold", 20.0)
-
     original_entry = getattr(AdaptiveStrategy, "_build_scalp_entry_signal", None)
     if original_entry is not None and not getattr(original_entry, "_adaptive_adx_guard", False):
         def guarded_entry(self, code, price, position_qty, atr, adx, volatility):
-            # Dedicated scalp ADX floor. This is independent of the global ADX threshold.
             if adx is None or float(adx) < adx_threshold:
                 return None
             return original_entry(self, code, price, position_qty, atr, adx, volatility)
@@ -33,9 +65,6 @@ def _patch_adaptive_scalp() -> None:
     original_history = getattr(AdaptiveStrategy, "_update_scalp_history", None)
     if original_history is not None and not getattr(original_history, "_price_history_fix", False):
         def patched_history(self, code, price, high, low):
-            # The original scalp logic checks recent price momentum, but the price
-            # history was not populated once ATR became available. Keep it populated
-            # on every candle so the momentum gate can actually pass.
             prices = self._price_history.get(code, [])
             prices.append(int(price))
             max_len = max(
@@ -80,10 +109,8 @@ def _patch_engine_ui_isolation() -> None:
                 self._rsi_trackers.clear()
                 self._last_rsi_values.clear()
         self._last_rsi = "-"
-        # Candle selection changes only the aggregation timeframe.
-        # RSI/ADX/Donchian/Livermore parameters remain untouched.
         self._rebuild_strategy(self._strategy_name)
-        self._logger.info("캔들 기준 변경: %s (기타 전략 설정 유지)", label)
+        self._logger.info("캔들 기준 변경: %s (전략별 파라미터 유지)", label)
         self._bump_ui_version("candle")
         self._publish_status()
 
@@ -91,16 +118,13 @@ def _patch_engine_ui_isolation() -> None:
         period = int(period)
         if period <= 0:
             return
-        if int(getattr(self._settings, "rsi_period", 14)) == period:
-            return
         self._settings.rsi_period = period
         with self._rsi_trackers_lock:
             self._rsi_trackers.clear()
             self._last_rsi_values.clear()
         self._last_rsi = "-"
-        # RSI period changes only RSI period; do not copy it into other strategies.
         self._rebuild_strategy(self._strategy_name)
-        self._logger.info("RSI 기간 변경: %d (기타 전략 기간 유지)", period)
+        self._logger.info("RSI 기간 변경: %d (다른 전략 기간 유지)", period)
         self._bump_ui_version("rsi_period")
         self._publish_status()
 
@@ -110,5 +134,6 @@ def _patch_engine_ui_isolation() -> None:
     TradingEngine.change_rsi_period = change_rsi_period
 
 
+_patch_strategy_factory()
 _patch_adaptive_scalp()
 _patch_engine_ui_isolation()
