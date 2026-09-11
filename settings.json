@@ -7,7 +7,7 @@
   "max_total_symbols": 20,
   "watchlist_include_holdings": true,
   "excluded_codes": ["0193W0", "452300"],
-  "ticks_per_candle": 20,
+  "ticks_per_candle": 30,
   "candle_source": "tick",
   "minutes_per_candle": 1,
   "minute_backfill_tick_size": 20,
