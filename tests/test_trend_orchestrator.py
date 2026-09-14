@@ -41,6 +41,33 @@ def test_trend_orchestrator_enters_after_breakout_and_momentum():
     assert signals[-1].side == "BUY"
     assert signals[-1].tag == "trend:ENTRY"
     assert signals[-1].quantity > 0
+    assert strategy.state["000001"].entry_price == 0.0
+
+
+def test_trend_entry_uses_actual_fill_price_for_stop():
+    clock = FixedClock()
+    cooldown = CooldownTracker(seconds=0, clock=clock)
+    market_hours = MarketHours(start="09:00", end="15:30", timezone="UTC")
+    settings = Settings()
+    settings.buy_cash = 100_000
+    settings.trend_breakout_period = 5
+    settings.trend_momentum_bars = 2
+    settings.trend_atr_period = 3
+    settings.trend_stop_atr_mult = 1.0
+    settings.trend_take_profit_pct = 100.0
+    settings.trend_trailing_atr_mult = 10.0
+
+    strategy = TrendOrchestrator(settings, cooldown, OrderSizer(), market_hours)
+    for price in (100, 100, 100, 100, 100, 101, 102):
+        signals = strategy.on_rsi_update("000001", 0, price, 0, high=price, low=price)
+
+    assert signals and signals[-1].tag == "trend:ENTRY"
+    strategy.on_order_filled("000001", "BUY", price=107)
+    assert strategy.state["000001"].entry_price == 107.0
+
+    # A signal-price-derived entry (102) would stop much earlier than the actual 107 fill.
+    signals = strategy.on_rsi_update("000001", 0, 106, 10, high=106, low=106)
+    assert not any(signal.tag == "trend:STOP" for signal in signals)
 
 
 def test_trend_orchestrator_stops_position_when_price_breaks_atr_stop():
@@ -59,6 +86,7 @@ def test_trend_orchestrator_stops_position_when_price_breaks_atr_stop():
     for price in (100, 101, 102, 103, 104):
         strategy.on_rsi_update("000001", 0, price, 0, high=price, low=price)
 
+    strategy.on_order_filled("000001", "BUY", price=104)
     signals = strategy.on_rsi_update("000001", 0, 95, 10, high=95, low=95)
 
     assert signals
