@@ -209,7 +209,86 @@ def _patch_engine_ui_isolation() -> None:
     TradingEngine.change_rsi_period = change_rsi_period
 
 
+def _patch_order_intent_guard() -> None:
+    """Block duplicate BUY/SELL submissions while the same order intent is unresolved."""
+    try:
+        from use_cases.order_intent_guard import OrderIntentGuard
+        from use_cases.trading_engine import TradingEngine
+    except Exception:
+        return
+
+    if getattr(TradingEngine, "_order_intent_guard_patch", False):
+        return
+
+    original_init = TradingEngine.__init__
+    original_execute = TradingEngine._execute_signal
+    original_clear_execution = getattr(TradingEngine, "_clear_pending_order_by_execution", None)
+    original_order_status = getattr(TradingEngine, "_handle_strategy_order_status", None)
+
+    def patched_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        self._order_intent_guard = OrderIntentGuard()
+
+    def patched_execute(self, signal, *args, **kwargs):
+        guard = getattr(self, "_order_intent_guard", None)
+        if guard is None:
+            return original_execute(self, signal, *args, **kwargs)
+        code = str(getattr(signal, "code", "") or "")
+        side = str(getattr(signal, "side", "") or "").upper()
+        if guard.is_pending(code, side):
+            self._logger.info("미체결 주문 중복 차단: %s %s", self._get_name(code), side)
+            return False
+        if not guard.claim(code, side, self._clock.now()):
+            return False
+        try:
+            sent = original_execute(self, signal, *args, **kwargs)
+        except Exception:
+            guard.release(code, side)
+            raise
+        if not sent:
+            guard.release(code, side)
+        return sent
+
+    def patched_clear_execution(self, execution):
+        result = None
+        try:
+            if original_clear_execution is not None:
+                result = original_clear_execution(self, execution)
+        finally:
+            guard = getattr(self, "_order_intent_guard", None)
+            if guard is not None:
+                guard.release(
+                    str(getattr(execution, "code", "") or ""),
+                    str(getattr(execution, "side", "") or "").upper(),
+                )
+        return result
+
+    def patched_order_status(self, data):
+        if original_order_status is not None:
+            result = original_order_status(self, data)
+        else:
+            result = None
+        status = str(self._chejan_field(data, "913") or "").strip()
+        if status and ("거부" in status or "취소" in status):
+            guard = getattr(self, "_order_intent_guard", None)
+            if guard is not None:
+                guard.release(
+                    self._normalize_chejan_code(data),
+                    "SELL" if clean_int(self._chejan_field(data, "907")) == 1 else "BUY",
+                )
+        return result
+
+    TradingEngine.__init__ = patched_init
+    TradingEngine._execute_signal = patched_execute
+    if original_clear_execution is not None:
+        TradingEngine._clear_pending_order_by_execution = patched_clear_execution
+    if original_order_status is not None:
+        TradingEngine._handle_strategy_order_status = patched_order_status
+    TradingEngine._order_intent_guard_patch = True
+
+
 _patch_settings_persistence()
 _patch_strategy_factory()
 _patch_adaptive_scalp()
 _patch_engine_ui_isolation()
+_patch_order_intent_guard()
