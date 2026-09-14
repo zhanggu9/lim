@@ -170,6 +170,7 @@ def _patch_engine_ui_isolation() -> None:
             self._rsi_trackers.clear()
             self._last_rsi_values.clear()
         self._last_rsi = "-"
+        self._last_rsi = "-"
         self._rebuild_strategy(self._strategy_name)
         self._logger.info("RSI 기간 변경: %d (다른 전략 기간 유지)", period)
         self._bump_ui_version("rsi_period")
@@ -181,7 +182,7 @@ def _patch_engine_ui_isolation() -> None:
 
 
 def _patch_order_intent_guard() -> None:
-    """Block duplicate orders and synchronize trend state with authoritative broker data."""
+    """Prevent duplicate orders, keep partial fills locked, and sync trend state."""
     try:
         from use_cases.order_intent_guard import OrderIntentGuard
         from use_cases.trading_engine import TradingEngine
@@ -205,7 +206,6 @@ def _patch_order_intent_guard() -> None:
         guard = getattr(self, "_order_intent_guard", None)
         if guard is None:
             return original_execute(self, signal, *args, **kwargs)
-        # Explicit strategy retry is already controlled by its own retry state.
         if kwargs.get("track_pending", True) is False:
             return original_execute(self, signal, *args, **kwargs)
         code = str(getattr(signal, "code", "") or "")
@@ -231,25 +231,33 @@ def _patch_order_intent_guard() -> None:
             else:
                 result = None
             strategy = getattr(self, "_strategy", None)
+            code = str(getattr(execution, "code", "") or "")
+            side = str(getattr(execution, "side", "") or "").upper()
+            quantity = int(getattr(execution, "quantity", 0) or 0)
+            remaining_qty = int(getattr(execution, "remaining_qty", 0) or 0)
+            price = float(getattr(execution, "price", 0) or 0)
             if (
                 strategy is not None
                 and str(getattr(strategy, "name", "")).lower() == "trend_combo"
                 and hasattr(strategy, "on_order_filled")
             ):
                 strategy.on_order_filled(
-                    str(getattr(execution, "code", "") or ""),
-                    str(getattr(execution, "side", "") or "").upper(),
+                    code,
+                    side,
                     stage=None,
-                    price=float(getattr(execution, "price", 0) or 0),
+                    price=price,
+                    quantity=quantity,
+                    remaining_qty=remaining_qty,
                 )
             return result
         finally:
             guard = getattr(self, "_order_intent_guard", None)
             if guard is not None:
-                guard.release(
-                    str(getattr(execution, "code", "") or ""),
-                    str(getattr(execution, "side", "") or "").upper(),
-                )
+                code = str(getattr(execution, "code", "") or "")
+                side = str(getattr(execution, "side", "") or "").upper()
+                remaining_qty = int(getattr(execution, "remaining_qty", 0) or 0)
+                if remaining_qty <= 0:
+                    guard.release(code, side)
 
     def patched_order_status(self, data):
         result = original_order_status(self, data) if original_order_status is not None else None
@@ -261,7 +269,6 @@ def _patch_order_intent_guard() -> None:
                 side = "SELL" if raw_side == 1 else "BUY" if raw_side == 2 else ""
                 if side:
                     guard.release(self._normalize_chejan_code(data), side)
-
         return result
 
     def patched_refresh_holdings(self, force):
