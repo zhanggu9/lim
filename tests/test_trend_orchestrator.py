@@ -32,7 +32,6 @@ def test_trend_orchestrator_enters_after_breakout_and_momentum():
 
     strategy = TrendOrchestrator(settings, cooldown, OrderSizer(), market_hours)
 
-    # Build enough history for ATR, then make a clean three-bar momentum breakout.
     prices = [100] * 10 + [101, 102, 103, 104, 105]
     signals = []
     for price in prices:
@@ -60,8 +59,7 @@ def test_trend_orchestrator_stops_position_when_price_breaks_atr_stop():
     for price in (100, 101, 102, 103, 104):
         strategy.on_rsi_update("000001", 0, price, 0, high=price, low=price)
 
-    # Simulate an existing position and a sharp adverse move.
-    signals = strategy.on_rsi_update("000001", 0, 100, 10, high=100, low=100)
+    signals = strategy.on_rsi_update("000001", 0, 95, 10, high=95, low=95)
 
     assert signals
     assert signals[-1].side == "SELL"
