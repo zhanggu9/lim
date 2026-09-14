@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import fields
 from pathlib import Path
 
 
@@ -10,6 +11,44 @@ def _load_setting(name: str, default: float) -> float:
         return float(data.get(name, default))
     except Exception:
         return float(default)
+
+
+def _patch_settings_persistence() -> None:
+    """Never drop settings that are not explicitly listed by the legacy serializer."""
+    try:
+        from app.settings import Settings
+    except Exception:
+        return
+
+    if getattr(Settings, "_safe_persistence_patch", False):
+        return
+
+    def patched_to_dict(self):
+        # Serialize every dataclass field so newly added strategy parameters
+        # cannot disappear when the UI saves settings after a strategy change.
+        return {field.name: getattr(self, field.name) for field in fields(self)}
+
+    def patched_save(self, path: str) -> None:
+        # Preserve unknown/future keys already present in the JSON file, then
+        # overwrite only the values represented by the current Settings object.
+        target = Path(path)
+        existing = {}
+        try:
+            if target.exists():
+                existing = json.loads(target.read_text(encoding="utf-8-sig"))
+                if not isinstance(existing, dict):
+                    existing = {}
+        except Exception:
+            existing = {}
+        existing.update(patched_to_dict(self))
+        target.write_text(
+            json.dumps(existing, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    Settings.to_dict = patched_to_dict
+    Settings.save = patched_save
+    Settings._safe_persistence_patch = True
 
 
 def _patch_strategy_factory() -> None:
@@ -134,6 +173,7 @@ def _patch_engine_ui_isolation() -> None:
     TradingEngine.change_rsi_period = change_rsi_period
 
 
+_patch_settings_persistence()
 _patch_strategy_factory()
 _patch_adaptive_scalp()
 _patch_engine_ui_isolation()
