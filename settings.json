@@ -155,5 +155,9 @@
   "adx_exit_falling_bars": 3,
   "adx_use_weak_exit": false,
   "atr_trailing_mult": 2.5,
-  "rsi_trace_log_enabled": false
+  "rsi_trace_log_enabled": false,
+  "sell_size_mode": "qty",
+  "sell_cash": 0,
+  "sell_qty": 0,
+  "api_rate_limit_per_sec": 4
 }
