@@ -62,6 +62,8 @@ class TrendOrchestrator:
         self.stop_atr = float(getattr(settings, "trend_stop_atr_mult", 1.0))
         self.trail_atr = float(getattr(settings, "trend_trailing_atr_mult", 1.5))
         self.max_chase_atr = float(getattr(settings, "trend_max_chase_atr_mult", 1.5))
+        self.min_breakout_atr = max(0.0, float(getattr(settings, "trend_min_breakout_atr", 0.15)))
+        self.min_close_location = min(1.0, max(0.5, float(getattr(settings, "trend_min_close_location", 0.70))))
         self.take_profit_pct = float(getattr(settings, "trend_take_profit_pct", 1.2))
         self.add_enabled = bool(getattr(settings, "trend_pyramiding_enabled", False))
         self.add_atr = float(getattr(settings, "trend_add_atr_mult", 1.2))
@@ -163,6 +165,10 @@ class TrendOrchestrator:
 
         previous_high = max(list(highs)[-(self.breakout_period + 1):-1])
         breakout = float(price) > previous_high
+        breakout_strength = (float(price) - previous_high) >= self.min_breakout_atr * atr
+        candle_range = max(0.0, float(high) - float(low))
+        close_location = 1.0 if candle_range <= 0 else (float(price) - float(low)) / candle_range
+        candle_quality = close_location >= self.min_close_location
         momentum = all(closes[-i - 1] < closes[-i] for i in range(1, self.momentum_bars + 1))
         dmi_ok = False
         if adx is not None and plus is not None and minus is not None:
@@ -172,7 +178,7 @@ class TrendOrchestrator:
             self.prev_adx[code] = float(adx)
 
         chase_ok = float(price) <= previous_high + self.max_chase_atr * atr
-        confirmation = breakout and chase_ok and (dmi_ok or momentum)
+        confirmation = breakout and breakout_strength and candle_quality and chase_ok and (dmi_ok or momentum)
         if confirmation and self.cooldown.allow(code):
             qty = self.order_sizer.buy_quantity(self.buy_cash, price)
             if qty > 0:
@@ -184,7 +190,9 @@ class TrendOrchestrator:
                 self.add_count[code] = 0
                 self._partial_fill_qty.pop(code, None)
                 self._partial_fill_notional.pop(code, None)
-                reason = f"TREND ENTRY breakout({self.breakout_period}) + {'DMI/ADX' if dmi_ok else 'momentum'}"
+                confirmation_type = "DMI/ADX" if dmi_ok else "momentum"
+                reason = f"TREND ENTRY breakout({self.breakout_period}) + {confirmation_type}"
+                reason += f" strength={((float(price) - previous_high) / atr):.2f}ATR close={close_location:.2f}"
                 if adx is not None:
                     reason += f" ADX={adx:.1f} DI+={plus:.1f} DI-={minus:.1f}"
                 signals.append(TradeSignal(code=code, side="BUY", quantity=qty, reason=reason, price=price, tag="trend:ENTRY"))
