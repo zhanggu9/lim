@@ -14,7 +14,6 @@ def _load_setting(name: str, default: float) -> float:
 
 
 def _patch_settings_persistence() -> None:
-    """Never drop settings that are not explicitly listed by the legacy serializer."""
     try:
         from app.settings import Settings
     except Exception:
@@ -70,7 +69,6 @@ def _patch_settings_persistence() -> None:
 
 
 def _patch_strategy_factory() -> None:
-    """Add the unified trend strategy without modifying the legacy strategy implementations."""
     try:
         import use_cases.strategy as strategy_module
         import use_cases.trading_engine as engine_module
@@ -163,7 +161,6 @@ def _patch_engine_ui_isolation() -> None:
         self._logger.info("캔들 기준 변경: %s (전략별 파라미터 유지)", label)
         self._bump_ui_version("candle")
         self._publish_status()
-
     def change_rsi_period(self, period):
         period = int(period)
         if period <= 0:
@@ -184,7 +181,7 @@ def _patch_engine_ui_isolation() -> None:
 
 
 def _patch_order_intent_guard() -> None:
-    """Block duplicate BUY/SELL submissions while the same order intent is unresolved."""
+    """Block duplicate orders and synchronize trend state with authoritative broker data."""
     try:
         from use_cases.order_intent_guard import OrderIntentGuard
         from use_cases.trading_engine import TradingEngine
@@ -193,10 +190,12 @@ def _patch_order_intent_guard() -> None:
         return
     if getattr(TradingEngine, "_order_intent_guard_patch", False):
         return
+
     original_init = TradingEngine.__init__
     original_execute = TradingEngine._execute_signal
     original_clear_execution = getattr(TradingEngine, "_clear_pending_order_by_execution", None)
     original_order_status = getattr(TradingEngine, "_handle_strategy_order_status", None)
+    original_refresh_holdings = getattr(TradingEngine, "_refresh_holdings", None)
 
     def patched_init(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
@@ -206,7 +205,7 @@ def _patch_order_intent_guard() -> None:
         guard = getattr(self, "_order_intent_guard", None)
         if guard is None:
             return original_execute(self, signal, *args, **kwargs)
-        # Strategy retry explicitly represents a deliberate re-send after timeout.
+        # Explicit strategy retry is already controlled by its own retry state.
         if kwargs.get("track_pending", True) is False:
             return original_execute(self, signal, *args, **kwargs)
         code = str(getattr(signal, "code", "") or "")
@@ -228,8 +227,22 @@ def _patch_order_intent_guard() -> None:
     def patched_clear_execution(self, execution):
         try:
             if original_clear_execution is not None:
-                return original_clear_execution(self, execution)
-            return None
+                result = original_clear_execution(self, execution)
+            else:
+                result = None
+            strategy = getattr(self, "_strategy", None)
+            if (
+                strategy is not None
+                and str(getattr(strategy, "name", "")).lower() == "trend_combo"
+                and hasattr(strategy, "on_order_filled")
+            ):
+                strategy.on_order_filled(
+                    str(getattr(execution, "code", "") or ""),
+                    str(getattr(execution, "side", "") or "").upper(),
+                    stage=None,
+                    price=float(getattr(execution, "price", 0) or 0),
+                )
+            return result
         finally:
             guard = getattr(self, "_order_intent_guard", None)
             if guard is not None:
@@ -248,6 +261,20 @@ def _patch_order_intent_guard() -> None:
                 side = "SELL" if raw_side == 1 else "BUY" if raw_side == 2 else ""
                 if side:
                     guard.release(self._normalize_chejan_code(data), side)
+
+        return result
+
+    def patched_refresh_holdings(self, force):
+        result = original_refresh_holdings(self, force) if original_refresh_holdings is not None else None
+        strategy = getattr(self, "_strategy", None)
+        if strategy is not None and str(getattr(strategy, "name", "")).lower() == "trend_combo":
+            if hasattr(strategy, "on_position_sync"):
+                for code in self._portfolio.get_codes():
+                    strategy.on_position_sync(
+                        code,
+                        self._portfolio.get_qty(code),
+                        self._portfolio.get_avg_price(code),
+                    )
         return result
 
     TradingEngine.__init__ = patched_init
@@ -256,6 +283,8 @@ def _patch_order_intent_guard() -> None:
         TradingEngine._clear_pending_order_by_execution = patched_clear_execution
     if original_order_status is not None:
         TradingEngine._handle_strategy_order_status = patched_order_status
+    if original_refresh_holdings is not None:
+        TradingEngine._refresh_holdings = patched_refresh_holdings
     TradingEngine._order_intent_guard_patch = True
 
 
