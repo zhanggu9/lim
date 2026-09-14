@@ -77,9 +77,11 @@ class TrendOrchestrator:
 
     def _hist(self, code):
         size = max(100, self.breakout_period + 20, self.exit_period + 20)
-        return (self.h.setdefault(code, deque(maxlen=size)),
-                self.l.setdefault(code, deque(maxlen=size)),
-                self.c.setdefault(code, deque(maxlen=size)))
+        return (
+            self.h.setdefault(code, deque(maxlen=size)),
+            self.l.setdefault(code, deque(maxlen=size)),
+            self.c.setdefault(code, deque(maxlen=size)),
+        )
 
     def on_rsi_update(self, code, rsi, price, position_qty, high=None, low=None) -> List[TradeSignal]:
         if not self.market_hours.is_open(self.cooldown.now()):
@@ -87,7 +89,9 @@ class TrendOrchestrator:
         high = price if high is None else high
         low = price if low is None else low
         highs, lows, closes = self._hist(code)
-        highs.append(float(high)); lows.append(float(low)); closes.append(float(price))
+        highs.append(float(high))
+        lows.append(float(low))
+        closes.append(float(price))
 
         atr = self.atr.setdefault(code, _ATR(self.atr_period)).update(high, low, price)
         result = self.adx.setdefault(code, AdxTracker(self.adx_period)).update(float(high), float(low), float(price))
@@ -100,7 +104,10 @@ class TrendOrchestrator:
 
         if position_qty > 0:
             st.phase = "IN_POSITION"
-            st.entry_price = st.entry_price or float(price)
+            # entry_price is deliberately NOT inferred from the latest market price.
+            # It is populated by on_order_filled() or on_position_sync().
+            if st.entry_price <= 0:
+                return []
             st.peak = max(st.peak or float(price), float(price))
             if atr and atr > 0:
                 stop = st.entry_price - self.stop_atr * atr
@@ -170,10 +177,11 @@ class TrendOrchestrator:
             qty = self.order_sizer.buy_quantity(self.buy_cash, price)
             if qty > 0:
                 self.cooldown.mark(code)
-                st.phase = "IN_POSITION"
-                st.entry_price = float(price)
-                st.peak = float(price)
-                st.last_add = float(price)
+                st.phase = "ENTRY_PENDING"
+                # Do not set entry price from signal price. The broker fill is authoritative.
+                st.entry_price = 0.0
+                st.peak = 0.0
+                st.last_add = 0.0
                 self.add_count[code] = 0
                 reason = f"TREND ENTRY breakout({self.breakout_period}) + {'DMI/ADX' if dmi_ok else 'momentum'}"
                 if adx is not None:
@@ -182,6 +190,48 @@ class TrendOrchestrator:
         else:
             st.phase = "SETUP" if breakout else "WATCH"
         return signals
+
+    def on_order_filled(self, code, side, stage=None, price=0.0):
+        """실제 체결가로 추세 상태를 확정한다."""
+        code = str(code or "")
+        side = str(side or "").upper()
+        price = float(price or 0.0)
+        if not code or price <= 0:
+            return
+        st = self.state.setdefault(code, TrendState())
+        if side == "BUY":
+            st.entry_price = price
+            st.peak = max(st.peak, price)
+            st.last_add = price
+            st.phase = "IN_POSITION"
+            return
+        if side == "SELL":
+            st.entry_price = 0.0
+            st.peak = 0.0
+            st.last_add = 0.0
+            self.add_count[code] = 0
+            st.phase = "WATCH"
+
+    def on_position_sync(self, code, qty, avg_price):
+        """계좌 잔고조회 결과를 전략 상태에 반영한다."""
+        code = str(code or "")
+        qty = int(qty or 0)
+        avg_price = float(avg_price or 0.0)
+        if not code:
+            return
+        st = self.state.setdefault(code, TrendState())
+        if qty <= 0:
+            st.entry_price = 0.0
+            st.peak = 0.0
+            st.last_add = 0.0
+            self.add_count[code] = 0
+            st.phase = "WATCH"
+            return
+        if avg_price > 0:
+            st.entry_price = avg_price
+            st.peak = max(st.peak or avg_price, avg_price)
+            st.last_add = st.last_add or avg_price
+            st.phase = "IN_POSITION"
 
     def reset_code(self, code):
         for d in (self.h, self.l, self.c, self.adx, self.atr, self.state, self.prev_adx, self.add_count):
