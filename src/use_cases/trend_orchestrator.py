@@ -74,6 +74,8 @@ class TrendOrchestrator:
         self.prev_adx: Dict[str, float] = {}
         self.state: Dict[str, TrendState] = {}
         self.add_count: Dict[str, int] = {}
+        self._partial_fill_qty: Dict[str, int] = {}
+        self._partial_fill_notional: Dict[str, float] = {}
 
     def _hist(self, code):
         size = max(100, self.breakout_period + 20, self.exit_period + 20)
@@ -104,8 +106,6 @@ class TrendOrchestrator:
 
         if position_qty > 0:
             st.phase = "IN_POSITION"
-            # entry_price is deliberately NOT inferred from the latest market price.
-            # It is populated by on_order_filled() or on_position_sync().
             if st.entry_price <= 0:
                 return []
             st.peak = max(st.peak or float(price), float(price))
@@ -178,11 +178,12 @@ class TrendOrchestrator:
             if qty > 0:
                 self.cooldown.mark(code)
                 st.phase = "ENTRY_PENDING"
-                # Do not set entry price from signal price. The broker fill is authoritative.
                 st.entry_price = 0.0
                 st.peak = 0.0
                 st.last_add = 0.0
                 self.add_count[code] = 0
+                self._partial_fill_qty.pop(code, None)
+                self._partial_fill_notional.pop(code, None)
                 reason = f"TREND ENTRY breakout({self.breakout_period}) + {'DMI/ADX' if dmi_ok else 'momentum'}"
                 if adx is not None:
                     reason += f" ADX={adx:.1f} DI+={plus:.1f} DI-={minus:.1f}"
@@ -191,25 +192,39 @@ class TrendOrchestrator:
             st.phase = "SETUP" if breakout else "WATCH"
         return signals
 
-    def on_order_filled(self, code, side, stage=None, price=0.0):
-        """실제 체결가로 추세 상태를 확정한다."""
+    def on_order_filled(self, code, side, stage=None, price=0.0, quantity=0, remaining_qty=0):
+        """실제 체결가로 추세 상태를 확정하고 부분체결은 가중평균으로 누적한다."""
         code = str(code or "")
         side = str(side or "").upper()
         price = float(price or 0.0)
+        quantity = max(0, int(quantity or 0))
+        remaining_qty = max(0, int(remaining_qty or 0))
         if not code or price <= 0:
             return
         st = self.state.setdefault(code, TrendState())
         if side == "BUY":
-            st.entry_price = price
-            st.peak = max(st.peak, price)
-            st.last_add = price
+            if quantity > 0:
+                filled_qty = self._partial_fill_qty.get(code, 0) + quantity
+                notional = self._partial_fill_notional.get(code, 0.0) + (price * quantity)
+                self._partial_fill_qty[code] = filled_qty
+                self._partial_fill_notional[code] = notional
+                st.entry_price = notional / filled_qty
+            else:
+                st.entry_price = price
+            st.peak = max(st.peak, price, st.entry_price)
+            st.last_add = st.entry_price
             st.phase = "IN_POSITION"
+            if remaining_qty == 0:
+                self._partial_fill_qty.pop(code, None)
+                self._partial_fill_notional.pop(code, None)
             return
         if side == "SELL":
             st.entry_price = 0.0
             st.peak = 0.0
             st.last_add = 0.0
             self.add_count[code] = 0
+            self._partial_fill_qty.pop(code, None)
+            self._partial_fill_notional.pop(code, None)
             st.phase = "WATCH"
 
     def on_position_sync(self, code, qty, avg_price):
@@ -225,6 +240,8 @@ class TrendOrchestrator:
             st.peak = 0.0
             st.last_add = 0.0
             self.add_count[code] = 0
+            self._partial_fill_qty.pop(code, None)
+            self._partial_fill_notional.pop(code, None)
             st.phase = "WATCH"
             return
         if avg_price > 0:
@@ -236,3 +253,5 @@ class TrendOrchestrator:
     def reset_code(self, code):
         for d in (self.h, self.l, self.c, self.adx, self.atr, self.state, self.prev_adx, self.add_count):
             d.pop(code, None)
+        self._partial_fill_qty.pop(code, None)
+        self._partial_fill_notional.pop(code, None)
