@@ -23,10 +23,45 @@ def _patch_settings_persistence() -> None:
     if getattr(Settings, "_safe_persistence_patch", False):
         return
 
+    trend_defaults = {
+        "trend_breakout_period": 10,
+        "trend_exit_period": 5,
+        "trend_momentum_bars": 3,
+        "trend_adx_period": 14,
+        "trend_adx_threshold": 20.0,
+        "trend_atr_period": 14,
+        "trend_stop_atr_mult": 1.0,
+        "trend_trailing_atr_mult": 1.5,
+        "trend_max_chase_atr_mult": 1.5,
+        "trend_take_profit_pct": 1.2,
+        "trend_pyramiding_enabled": False,
+        "trend_add_atr_mult": 1.2,
+        "trend_max_adds": 1,
+    }
+
+    original_load = Settings.load
+
+    @classmethod
+    def patched_load(cls, path: str):
+        settings = original_load.__func__(cls, path)
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+            if isinstance(data, dict):
+                for name, default in trend_defaults.items():
+                    setattr(settings, name, data.get(name, default))
+        except Exception:
+            for name, default in trend_defaults.items():
+                if not hasattr(settings, name):
+                    setattr(settings, name, default)
+        return settings
+
     def patched_to_dict(self):
         # Serialize every dataclass field so newly added strategy parameters
         # cannot disappear when the UI saves settings after a strategy change.
-        return {field.name: getattr(self, field.name) for field in fields(self)}
+        result = {field.name: getattr(self, field.name) for field in fields(self)}
+        for name, default in trend_defaults.items():
+            result[name] = getattr(self, name, default)
+        return result
 
     def patched_save(self, path: str) -> None:
         # Preserve unknown/future keys already present in the JSON file, then
@@ -46,6 +81,7 @@ def _patch_settings_persistence() -> None:
             encoding="utf-8",
         )
 
+    Settings.load = patched_load
     Settings.to_dict = patched_to_dict
     Settings.save = patched_save
     Settings._safe_persistence_patch = True
