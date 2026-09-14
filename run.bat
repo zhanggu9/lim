@@ -1,5 +1,4 @@
 @echo off
-@echo off
 setlocal
 set PYTHONDONTWRITEBYTECODE=1
 
